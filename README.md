@@ -418,10 +418,137 @@ launchctl list | grep imessage
 ✅ Faster than manual method
 ✅ Server runs stably (no crashes)
 
+## Phase 2A: Automated Daily Summaries
+
+**Status: ✅ IMPLEMENTED**
+
+Automatic daily iMessage activity summaries generated at 8:00 PM and saved to `~/Documents/Daily_Summaries/`.
+
+### Features
+
+- **Automated Generation**: Runs daily at 8:00 PM via launchd
+- **Summary Statistics**: Total conversations and messages
+- **Active Conversations Table**: Top contacts with message counts
+- **Detailed Snippets**: Recent messages from top 5 contacts
+- **Activity Timeline**: Hourly breakdown with visual bars
+- **Quick Insights**: Most active contact, peak hour, averages
+- **Error Handling**: Graceful handling of no messages, permission errors
+- **Logging**: Activity logs saved to `~/Documents/Daily_Summaries/logs/`
+
+### Installation
+
+Run the setup script:
+
+```bash
+./setup_daily_summary.sh
+```
+
+This will:
+1. Detect your Python path
+2. Create necessary directories
+3. Install launchd job for 8:00 PM execution
+4. Verify installation
+
+### Manual Testing
+
+Generate a summary for today immediately:
+
+```bash
+python3 generate_daily_summary.py
+```
+
+Check the output:
+
+```bash
+open ~/Documents/Daily_Summaries/
+```
+
+### Files
+
+- `generate_daily_summary.py` - Main summary generation script
+- `com.imessage.daily-summary.plist` - launchd configuration template
+- `setup_daily_summary.sh` - Installation and setup script
+
+### Output Format
+
+Summaries are saved as markdown files:
+- **Location**: `~/Documents/Daily_Summaries/YYYY-MM-DD.md`
+- **Format**: Markdown with tables, lists, and visual elements
+- **Logs**: `~/Documents/Daily_Summaries/logs/daily_summary.log`
+
+### Example Summary
+
+```markdown
+# iMessage Daily Summary - 2025-11-10
+
+## 📊 Summary Statistics
+
+- **Total Conversations:** 8
+- **Total Messages:** 52
+
+## 💬 Active Conversations
+
+| Contact | Messages | Last Activity |
+|---------|----------|---------------|
+| (555) 012-3456 | 18 | 17:45 |
+| (555) 987-6543 | 12 | 16:30 |
+
+## 📝 Conversation Details
+
+### (555) 012-3456 (18 messages)
+
+- **09:15** - Christian: Chatham drywall done
+- **09:17** - You: Good. What about paint?
+...
+```
+
+### Troubleshooting
+
+**Check if job is running:**
+```bash
+launchctl list | grep imessage
+```
+
+**View logs:**
+```bash
+tail -f ~/Documents/Daily_Summaries/logs/daily_summary.log
+```
+
+**Manually trigger (for testing):**
+```bash
+launchctl start com.imessage.daily-summary
+```
+
+**Uninstall:**
+```bash
+launchctl unload ~/Library/LaunchAgents/com.imessage.daily-summary.plist
+rm ~/Library/LaunchAgents/com.imessage.daily-summary.plist
+```
+
+### Success Criteria
+
+✅ Script runs without errors
+✅ Summary files created in ~/Documents/Daily_Summaries/
+✅ Markdown format is correct and readable
+✅ Data is accurate (matches actual messages)
+✅ Runs automatically at 8:00 PM via launchd
+✅ Handles errors gracefully (no crashes)
+✅ Logs activity for debugging
+✅ Works on days with no messages
+
+### Validation Period
+
+**Run Phase 2A for 1 week before considering Phase 2B features.**
+
+Monitor daily summaries to ensure:
+- Accuracy of message data
+- Reliability of scheduling
+- Quality of insights generated
+- No performance issues
+
 ## Future Phases (Not Yet Implemented)
 
-### Phase 2: Proactive Analysis
-- Daily summary generation
+### Phase 2B: Advanced Analysis
 - Conflict detection
 - Decision routing
 - Meeting prep automation
@@ -459,6 +586,15 @@ For issues:
 4. Review server logs for error details
 
 ## Changelog
+
+### v1.1.0 - Phase 2A (2025-11-10)
+- Automated daily summary generation
+- Runs at 8:00 PM via launchd
+- Markdown summaries with statistics, conversations, timeline, and insights
+- Handles days with no messages gracefully
+- Comprehensive error handling and logging
+- One-command setup script
+- Saved to ~/Documents/Daily_Summaries/
 
 ### v1.0.0 - Phase 1 (2025-11-10)
 - Initial release
