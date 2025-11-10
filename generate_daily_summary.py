@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Generate daily iMessage activity summary.
+Generate daily iMessage activity summary with Claude API analysis.
 
 Runs automatically at 8:00 PM via launchd to create a markdown summary
 of the day's message activity. Saves to ~/Documents/Daily_Summaries/
@@ -9,26 +9,38 @@ of the day's message activity. Saves to ~/Documents/Daily_Summaries/
 import os
 import sys
 import logging
-from datetime import datetime
+import json
+import sqlite3
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from database import (
-    get_threads_for_date,
-    get_active_contacts,
-    get_messages_by_contact,
-    get_db_connection
+    get_db_connection,
+    apple_to_unix,
+    unix_to_apple,
+    format_timestamp,
 )
+
+# Try to import Anthropic SDK
+try:
+    from anthropic import Anthropic
+    ANTHROPIC_AVAILABLE = True
+except ImportError:
+    ANTHROPIC_AVAILABLE = False
+    logging.warning("Anthropic SDK not available. Install with: pip install anthropic")
 
 # Configuration
 SUMMARY_DIR = os.path.expanduser("~/Documents/Daily_Summaries")
 LOG_DIR = os.path.expanduser("~/Documents/Daily_Summaries/logs")
 LOG_FILE = os.path.join(LOG_DIR, "daily_summary.log")
 
+# API Configuration
+ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
+
 # Summary settings
 MIN_MESSAGES_TO_INCLUDE = 2
-TOP_CONTACTS_COUNT = 10
-RECENT_MESSAGES_PER_CONTACT = 5
+MAX_MESSAGES_TO_ANALYZE = 500  # Limit for API
 
 
 def setup_logging():
@@ -64,6 +76,263 @@ def format_contact_name(contact_id: str) -> str:
     return contact_id
 
 
+def get_messages_for_date(date_str: str, conn: sqlite3.Connection) -> List[Dict]:
+    """
+    Get ALL messages for a specific date with full text.
+
+    Args:
+        date_str: Date in YYYY-MM-DD format
+        conn: Database connection
+
+    Returns:
+        List of message dictionaries with contact, time, sender, and text
+    """
+    # Parse date
+    target_date = datetime.strptime(date_str, '%Y-%m-%d')
+
+    # Calculate date range (start and end of day)
+    start_of_day = target_date.replace(hour=0, minute=0, second=0)
+    end_of_day = target_date.replace(hour=23, minute=59, second=59)
+
+    start_apple = unix_to_apple(start_of_day.timestamp())
+    end_apple = unix_to_apple(end_of_day.timestamp())
+
+    logging.info(f"Querying messages for {date_str} (start: {start_of_day}, end: {end_of_day})")
+
+    cursor = conn.cursor()
+
+    # Query all messages for the date with contact information
+    cursor.execute("""
+        SELECT
+            m.ROWID,
+            m.text,
+            m.date,
+            m.is_from_me,
+            h.id as contact_id,
+            c.chat_identifier
+        FROM message m
+        LEFT JOIN handle h ON m.handle_id = h.ROWID
+        LEFT JOIN chat_message_join cmj ON m.ROWID = cmj.message_id
+        LEFT JOIN chat c ON cmj.chat_id = c.ROWID
+        WHERE m.date >= ? AND m.date <= ?
+            AND m.text IS NOT NULL
+            AND m.text != ''
+        ORDER BY m.date ASC
+        LIMIT ?
+    """, (start_apple, end_apple, MAX_MESSAGES_TO_ANALYZE))
+
+    rows = cursor.fetchall()
+    logging.info(f"Found {len(rows)} messages for {date_str}")
+
+    # Format messages
+    messages = []
+    for row in rows:
+        unix_time = apple_to_unix(row['date'])
+        contact = row['contact_id'] or row['chat_identifier'] or "Unknown"
+
+        messages.append({
+            "timestamp": format_timestamp(unix_time),
+            "time": datetime.fromtimestamp(unix_time).strftime('%H:%M'),
+            "contact": contact,
+            "sender": "You" if row['is_from_me'] else contact,
+            "text": row['text'],
+            "is_from_me": bool(row['is_from_me'])
+        })
+
+    return messages
+
+
+def group_messages_by_contact(messages: List[Dict]) -> Dict[str, List[Dict]]:
+    """Group messages by contact."""
+    grouped = {}
+    for msg in messages:
+        contact = msg['contact']
+        if contact not in grouped:
+            grouped[contact] = []
+        grouped[contact].append(msg)
+    return grouped
+
+
+def generate_basic_summary(date_str: str, messages: List[Dict], grouped: Dict[str, List[Dict]]) -> str:
+    """
+    Generate basic summary without Claude API (fallback).
+
+    Args:
+        date_str: Date string
+        messages: All messages
+        grouped: Messages grouped by contact
+
+    Returns:
+        Markdown summary
+    """
+    lines = []
+    lines.append(f"# Daily Communication Summary")
+    lines.append(f"**Date:** {date_str}")
+    lines.append(f"**Generated:** {datetime.now().strftime('%I:%M %p')}")
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+
+    if not messages:
+        lines.append("*No message activity today.*")
+        lines.append("")
+        return "\n".join(lines)
+
+    # Summary statistics
+    lines.append("## 📊 Summary Statistics")
+    lines.append("")
+    lines.append(f"- **Total Messages:** {len(messages)}")
+    lines.append(f"- **Total Conversations:** {len(grouped)}")
+    lines.append("")
+
+    # Most active conversations
+    lines.append("## 💬 Most Active Conversations")
+    lines.append("")
+
+    # Sort by message count
+    sorted_contacts = sorted(grouped.items(), key=lambda x: len(x[1]), reverse=True)
+
+    for contact, contact_messages in sorted_contacts[:10]:
+        contact_display = format_contact_name(contact)
+        msg_count = len(contact_messages)
+
+        lines.append(f"**{contact_display} ({msg_count} messages)**")
+        lines.append("")
+
+        # Show recent messages
+        for msg in contact_messages[-5:]:
+            sender = "You" if msg['is_from_me'] else contact_display.split()[0]
+            text = msg['text'][:100] + ("..." if len(msg['text']) > 100 else "")
+            lines.append(f"- **{msg['time']}** - {sender}: {text}")
+
+        lines.append("")
+
+    # Footer
+    lines.append("---")
+    lines.append("")
+    lines.append("*Generated by iMessage MCP Server - Phase 2A (Basic Mode)*")
+    lines.append("")
+
+    return "\n".join(lines)
+
+
+def analyze_with_claude(date_str: str, messages: List[Dict], grouped: Dict[str, List[Dict]]) -> str:
+    """
+    Use Claude API to analyze messages and generate structured summary.
+
+    Args:
+        date_str: Date string
+        messages: All messages
+        grouped: Messages grouped by contact
+
+    Returns:
+        Claude-generated markdown summary
+    """
+    if not ANTHROPIC_AVAILABLE:
+        logging.warning("Anthropic SDK not available, using basic summary")
+        return generate_basic_summary(date_str, messages, grouped)
+
+    if not ANTHROPIC_API_KEY:
+        logging.warning("ANTHROPIC_API_KEY not set, using basic summary")
+        return generate_basic_summary(date_str, messages, grouped)
+
+    try:
+        # Prepare conversation data for Claude
+        conversations = []
+        for contact, contact_messages in grouped.items():
+            conversations.append({
+                "contact": format_contact_name(contact),
+                "message_count": len(contact_messages),
+                "messages": [
+                    {
+                        "time": msg['time'],
+                        "sender": "You" if msg['is_from_me'] else "Them",
+                        "text": msg['text']
+                    }
+                    for msg in contact_messages
+                ]
+            })
+
+        # Sort by message count
+        conversations.sort(key=lambda x: x['message_count'], reverse=True)
+
+        # Create prompt for Claude
+        prompt = f"""Analyze these iMessage conversations from {date_str} and generate a structured daily summary.
+
+CONTEXT:
+- User is a busy CFO running a 75-property real estate business
+- Focus on actionable information
+- Be concise and prioritize business-critical items
+
+CONVERSATIONS:
+{json.dumps(conversations, indent=2)}
+
+Generate a markdown summary with these sections:
+
+## 📊 Most Active Conversations
+List top 5-10 contacts with:
+- Message count
+- Brief topic summary (what was discussed?)
+- Key points (1-3 bullets)
+
+## 💬 Key Topics Discussed
+Main themes across ALL conversations (3-5 bullet points)
+
+## ✅ Decisions Made
+Any approvals, commitments, conclusions made today. If none, say "None recorded."
+
+## ⏳ Pending Decisions
+Anything awaiting response or action. If none, say "None identified."
+
+## 🚨 Urgent Items
+Messages marked urgent/ASAP or critical issues. If none, say "No urgent items."
+
+## 📋 Follow-ups Needed
+Unanswered questions or pending responses. If none, say "None."
+
+IMPORTANT:
+- Keep it concise - this is an 8 PM daily summary for quick review
+- Focus on business-relevant items
+- If a section has nothing, say so briefly
+- Don't include timestamps in the summary (already have them in raw data)
+- Use natural language, not formal business-speak
+
+Start with:
+# Daily Communication Summary
+**Date:** {date_str}
+**Generated:** {datetime.now().strftime('%I:%M %p')}
+
+---
+"""
+
+        # Call Claude API
+        logging.info("Calling Claude API for message analysis...")
+        client = Anthropic(api_key=ANTHROPIC_API_KEY)
+
+        message = client.messages.create(
+            model="claude-sonnet-4-5-20250929",
+            max_tokens=2000,
+            messages=[
+                {"role": "user", "content": prompt}
+            ]
+        )
+
+        # Extract summary from response
+        summary = message.content[0].text
+
+        # Add footer
+        summary += "\n\n---\n\n"
+        summary += "*Generated by iMessage MCP Server - Phase 2A (Claude Analysis)*\n"
+
+        logging.info("Claude API analysis completed successfully")
+        return summary
+
+    except Exception as e:
+        logging.error(f"Error calling Claude API: {e}", exc_info=True)
+        logging.warning("Falling back to basic summary")
+        return generate_basic_summary(date_str, messages, grouped)
+
+
 def generate_summary_markdown(date_str: str) -> str:
     """
     Generate markdown summary for the given date.
@@ -76,202 +345,92 @@ def generate_summary_markdown(date_str: str) -> str:
     """
     logging.info(f"Generating summary for {date_str}")
 
-    # Start markdown document
-    lines = []
-    lines.append(f"# iMessage Daily Summary - {date_str}")
-    lines.append("")
-    lines.append(f"*Generated at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*")
-    lines.append("")
-    lines.append("---")
-    lines.append("")
-
     try:
         # Get database connection
         conn = get_db_connection()
 
-        # Get threads for the day
-        threads_data = get_threads_for_date(date_str, exclude_group_chats=False, conn=conn)
+        # Get all messages for the date
+        messages = get_messages_for_date(date_str, conn)
 
-        # Check if there are any messages
-        total_messages = threads_data.get('total_messages', 0)
-        total_threads = threads_data.get('total_threads', 0)
-
-        # Summary statistics
-        lines.append("## 📊 Summary Statistics")
-        lines.append("")
-        lines.append(f"- **Total Conversations:** {total_threads}")
-        lines.append(f"- **Total Messages:** {total_messages}")
-        lines.append("")
-
-        if total_messages == 0:
-            lines.append("*No message activity today.*")
-            lines.append("")
-            return "\n".join(lines)
-
-        # Active conversations
-        lines.append("## 💬 Active Conversations")
-        lines.append("")
-
-        threads = threads_data.get('threads', [])
-        if threads:
-            lines.append("| Contact | Messages | Last Activity |")
-            lines.append("|---------|----------|---------------|")
-
-            for thread in threads[:TOP_CONTACTS_COUNT]:
-                contact = format_contact_name(thread['contact'])
-                msg_count = thread['message_count']
-                last_time = thread['last_timestamp'].split()[1]  # Just the time
-                lines.append(f"| {contact} | {msg_count} | {last_time} |")
-
-            lines.append("")
-        else:
-            lines.append("*No conversations found.*")
-            lines.append("")
-
-        # Detailed thread summaries for top contacts
-        lines.append("## 📝 Conversation Details")
-        lines.append("")
-
-        # Get top 5 most active threads
-        top_threads = [t for t in threads if t['message_count'] >= MIN_MESSAGES_TO_INCLUDE][:5]
-
-        if top_threads:
-            for thread in top_threads:
-                contact_id = thread['contact']
-                contact_display = format_contact_name(contact_id)
-                msg_count = thread['message_count']
-
-                lines.append(f"### {contact_display} ({msg_count} messages)")
-                lines.append("")
-
-                # Get recent messages for this contact
-                try:
-                    messages_data = get_messages_by_contact(
-                        contact_id,
-                        days_back=1,
-                        limit=RECENT_MESSAGES_PER_CONTACT,
-                        conn=conn
-                    )
-
-                    messages = messages_data.get('messages', [])
-                    if messages:
-                        # Show last few messages
-                        for msg in messages[-RECENT_MESSAGES_PER_CONTACT:]:
-                            time = msg['timestamp'].split()[1]  # Just the time
-                            sender = "You" if msg['is_from_me'] else contact_display.split()[0]
-                            text = msg['text']
-
-                            # Truncate long messages
-                            if len(text) > 100:
-                                text = text[:97] + "..."
-
-                            lines.append(f"- **{time}** - {sender}: {text}")
-
-                        lines.append("")
-                    else:
-                        lines.append("*No messages available.*")
-                        lines.append("")
-
-                except Exception as e:
-                    logging.warning(f"Could not get messages for {contact_id}: {e}")
-                    lines.append("*Could not retrieve messages.*")
-                    lines.append("")
-
-        else:
-            lines.append("*No significant conversations today.*")
-            lines.append("")
-
-        # Activity timeline
-        lines.append("## ⏰ Activity Timeline")
-        lines.append("")
-
-        # Group messages by hour
-        hour_counts = {}
-        for thread in threads:
-            try:
-                timestamp = thread['last_timestamp']
-                hour = int(timestamp.split()[1].split(':')[0])  # Extract hour
-                hour_counts[hour] = hour_counts.get(hour, 0) + thread['message_count']
-            except (ValueError, IndexError):
-                continue
-
-        if hour_counts:
-            # Create a simple bar chart
-            max_count = max(hour_counts.values())
-            for hour in sorted(hour_counts.keys()):
-                count = hour_counts[hour]
-                bar_length = int((count / max_count) * 20)  # Scale to 20 chars max
-                bar = '█' * bar_length
-                time_str = f"{hour:02d}:00"
-                lines.append(f"{time_str} | {bar} ({count} messages)")
-
-            lines.append("")
-        else:
-            lines.append("*No timeline data available.*")
-            lines.append("")
-
-        # Quick insights
-        lines.append("## 💡 Quick Insights")
-        lines.append("")
-
-        if threads:
-            most_active = threads[0]
-            most_active_name = format_contact_name(most_active['contact'])
-            most_active_count = most_active['message_count']
-            lines.append(f"- **Most Active:** {most_active_name} ({most_active_count} messages)")
-
-            # Calculate message velocity (messages per conversation)
-            avg_messages = total_messages / total_threads if total_threads > 0 else 0
-            lines.append(f"- **Average Messages per Conversation:** {avg_messages:.1f}")
-
-            # Peak hour
-            if hour_counts:
-                peak_hour = max(hour_counts.items(), key=lambda x: x[1])
-                lines.append(f"- **Peak Activity Hour:** {peak_hour[0]:02d}:00 ({peak_hour[1]} messages)")
-
-            lines.append("")
-
+        # Close connection
         conn.close()
+
+        if not messages:
+            logging.info("No messages found for this date")
+            return f"""# Daily Communication Summary
+**Date:** {date_str}
+**Generated:** {datetime.now().strftime('%I:%M %p')}
+
+---
+
+*No message activity today.*
+
+---
+
+*Generated by iMessage MCP Server - Phase 2A*
+"""
+
+        # Group messages by contact
+        grouped = group_messages_by_contact(messages)
+
+        logging.info(f"Found {len(messages)} messages across {len(grouped)} conversations")
+
+        # Use Claude API to analyze (or fallback to basic summary)
+        summary = analyze_with_claude(date_str, messages, grouped)
+
+        return summary
 
     except FileNotFoundError as e:
         logging.error(f"Database not found: {e}")
-        lines.append("## ⚠️ Error")
-        lines.append("")
-        lines.append("Could not access iMessage database. Make sure:")
-        lines.append("- You're running on macOS")
-        lines.append("- Messages app is installed")
-        lines.append("- Full Disk Access is granted")
-        lines.append("")
+        return f"""# Daily Communication Summary
+**Date:** {date_str}
+
+---
+
+## ⚠️ Error
+
+Could not access iMessage database. Make sure:
+- You're running on macOS
+- Messages app is installed
+- Full Disk Access is granted
+
+---
+"""
 
     except PermissionError as e:
         logging.error(f"Permission denied: {e}")
-        lines.append("## ⚠️ Error")
-        lines.append("")
-        lines.append("Permission denied accessing iMessage database.")
-        lines.append("")
-        lines.append("Grant Full Disk Access:")
-        lines.append("1. System Preferences > Privacy & Security > Full Disk Access")
-        lines.append("2. Add Python or Terminal")
-        lines.append("3. Restart Terminal")
-        lines.append("")
+        return f"""# Daily Communication Summary
+**Date:** {date_str}
+
+---
+
+## ⚠️ Error
+
+Permission denied accessing iMessage database.
+
+Grant Full Disk Access:
+1. System Preferences > Privacy & Security > Full Disk Access
+2. Add Python or Terminal
+3. Restart Terminal
+
+---
+"""
 
     except Exception as e:
         logging.error(f"Unexpected error generating summary: {e}", exc_info=True)
-        lines.append("## ⚠️ Error")
-        lines.append("")
-        lines.append(f"An unexpected error occurred: {str(e)}")
-        lines.append("")
-        lines.append("Check the log file for details:")
-        lines.append(f"`{LOG_FILE}`")
-        lines.append("")
+        return f"""# Daily Communication Summary
+**Date:** {date_str}
 
-    # Footer
-    lines.append("---")
-    lines.append("")
-    lines.append("*Generated by iMessage MCP Server - Phase 2A*")
-    lines.append("")
+---
 
-    return "\n".join(lines)
+## ⚠️ Error
+
+An unexpected error occurred: {str(e)}
+
+Check the log file for details: `{LOG_FILE}`
+
+---
+"""
 
 
 def save_summary(date_str: str, content: str) -> str:
@@ -304,6 +463,11 @@ def main():
     logging.info("=" * 60)
 
     try:
+        # Check for API key
+        if ANTHROPIC_AVAILABLE and not ANTHROPIC_API_KEY:
+            logging.warning("ANTHROPIC_API_KEY environment variable not set")
+            logging.warning("Using basic summary mode (no Claude analysis)")
+
         # Ensure output directory exists
         ensure_summary_directory()
 
