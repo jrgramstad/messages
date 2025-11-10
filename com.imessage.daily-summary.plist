@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Job Label (must be unique) -->
+    <key>Label</key>
+    <string>com.imessage.daily-summary</string>
+
+    <!-- Program to run -->
+    <key>ProgramArguments</key>
+    <array>
+        <!-- REPLACE WITH YOUR PYTHON PATH: run 'which python3' to find it -->
+        <string>/usr/local/bin/python3</string>
+        <!-- REPLACE WITH YOUR SCRIPT PATH -->
+        <string>/Users/YOUR_USERNAME/path/to/messages/generate_daily_summary.py</string>
+    </array>
+
+    <!-- Run at 8:00 PM daily -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>20</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <!-- Working directory -->
+    <key>WorkingDirectory</key>
+    <!-- REPLACE WITH YOUR PROJECT PATH -->
+    <string>/Users/YOUR_USERNAME/path/to/messages</string>
+
+    <!-- Standard output log -->
+    <key>StandardOutPath</key>
+    <string>/tmp/imessage-daily-summary.out.log</string>
+
+    <!-- Standard error log -->
+    <key>StandardErrorPath</key>
+    <string>/tmp/imessage-daily-summary.err.log</string>
+
+    <!-- Keep job loaded -->
+    <key>RunAtLoad</key>
+    <false/>
+
+    <!-- Don't throttle if it runs quickly -->
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+</dict>
+</plist>
