@@ -463,9 +463,43 @@ Check the output:
 open ~/Documents/Daily_Summaries/
 ```
 
+### Historical Backfill
+
+Generate summaries for historical date range (Sept 1 - Nov 10, 2025) to enable pattern analysis:
+
+```bash
+# Set your API key
+export ANTHROPIC_API_KEY=your_key_here
+
+# Run backfill script
+python3 backfill_summaries.py
+```
+
+The script will:
+- Process 71 days (Sept 1 - Nov 10, 2025)
+- Skip existing summaries (won't overwrite)
+- Show progress for each day
+- Display estimated cost (~$1.42 for 71 days)
+- Display estimated time (~2 minutes)
+- Generate summaries with same format as daily script
+
+**Force overwrite existing summaries:**
+```bash
+python3 backfill_summaries.py --force
+```
+
+**Progress output:**
+```
+[1/71] Processing: 2025-09-01... 23 messages... ✓ Saved
+[2/71] SKIP: 2025-09-02 (already exists)
+[3/71] Processing: 2025-09-03... No messages
+...
+```
+
 ### Files
 
 - `generate_daily_summary.py` - Main summary generation script
+- `backfill_summaries.py` - Historical backfill script (Sept 1 - Nov 10)
 - `com.imessage.daily-summary.plist` - launchd configuration template
 - `setup_daily_summary.sh` - Installation and setup script
 
@@ -586,6 +620,16 @@ For issues:
 4. Review server logs for error details
 
 ## Changelog
+
+### v1.2.0 - Phase 2A Fixes + Backfill (2025-11-10)
+- **FIX**: Daily summary now retrieves actual message text from database
+- **FIX**: Message retrieval queries specific DATE (not rolling 24 hours)
+- **NEW**: Claude API integration for intelligent summary analysis
+- **NEW**: Structured summaries with 6 business-focused sections
+- **NEW**: Historical backfill script for Sept 1 - Nov 10, 2025
+- **NEW**: Backfill processes 71 days with progress tracking
+- Added anthropic SDK to requirements
+- Fallback to basic summary if API key not set
 
 ### v1.1.0 - Phase 2A (2025-11-10)
 - Automated daily summary generation
