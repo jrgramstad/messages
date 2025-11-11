@@ -104,6 +104,7 @@ def get_messages_for_date(date_str: str, conn: sqlite3.Connection) -> List[Dict]
     # Query messages directly from message table
     # Use SQLite's datetime conversion on Apple epoch timestamps
     # Don't use chat_message_join as it may filter out messages
+    # Include ALL messages (with and without text) to get accurate counts
     cursor.execute("""
         SELECT
             m.ROWID,
@@ -115,8 +116,6 @@ def get_messages_for_date(date_str: str, conn: sqlite3.Connection) -> List[Dict]
         LEFT JOIN handle h ON m.handle_id = h.ROWID
         WHERE datetime(m.date/1000000000 + strftime('%s', '2001-01-01'), 'unixepoch')
             BETWEEN ? AND ?
-            AND m.text IS NOT NULL
-            AND m.text != ''
         ORDER BY m.date ASC
         LIMIT ?
     """, (start_datetime, end_datetime, MAX_MESSAGES_TO_ANALYZE))
@@ -130,12 +129,17 @@ def get_messages_for_date(date_str: str, conn: sqlite3.Connection) -> List[Dict]
         unix_time = apple_to_unix(row['date'])
         contact = row['contact_id'] or "Unknown"
 
+        # Handle messages without text (media, reactions, tapbacks, etc.)
+        text = row['text']
+        if not text or text.strip() == '':
+            text = "[media/attachment]"
+
         messages.append({
             "timestamp": format_timestamp(unix_time),
             "time": datetime.fromtimestamp(unix_time).strftime('%H:%M'),
             "contact": contact,
             "sender": "You" if row['is_from_me'] else contact,
-            "text": row['text'],
+            "text": text,
             "is_from_me": bool(row['is_from_me'])
         })
 
