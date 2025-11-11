@@ -87,21 +87,18 @@ def get_messages_for_date(date_str: str, conn: sqlite3.Connection) -> List[Dict]
     Returns:
         List of message dictionaries with contact, time, sender, and text
     """
-    # Parse date
-    target_date = datetime.strptime(date_str, '%Y-%m-%d')
+    # Create datetime strings for start and end of day
+    start_datetime = f"{date_str} 00:00:00"
+    end_datetime = f"{date_str} 23:59:59"
 
-    # Calculate date range (start and end of day)
-    start_of_day = target_date.replace(hour=0, minute=0, second=0)
-    end_of_day = target_date.replace(hour=23, minute=59, second=59)
-
-    start_apple = unix_to_apple(start_of_day.timestamp())
-    end_apple = unix_to_apple(end_of_day.timestamp())
-
-    logging.info(f"Querying messages for {date_str} (start: {start_of_day}, end: {end_of_day})")
+    logging.info(f"Querying messages for {date_str} ({start_datetime} to {end_datetime})")
 
     cursor = conn.cursor()
 
     # Query all messages for the date with contact information
+    # Use SQLite's datetime conversion directly on Apple epoch timestamps
+    # Apple epoch: nanoseconds since 2001-01-01
+    # Conversion: date/1000000000 (to seconds) + Unix timestamp of 2001-01-01
     cursor.execute("""
         SELECT
             m.ROWID,
@@ -114,12 +111,13 @@ def get_messages_for_date(date_str: str, conn: sqlite3.Connection) -> List[Dict]
         LEFT JOIN handle h ON m.handle_id = h.ROWID
         LEFT JOIN chat_message_join cmj ON m.ROWID = cmj.message_id
         LEFT JOIN chat c ON cmj.chat_id = c.ROWID
-        WHERE m.date >= ? AND m.date <= ?
+        WHERE datetime(m.date/1000000000 + strftime('%s', '2001-01-01'), 'unixepoch')
+            BETWEEN ? AND ?
             AND m.text IS NOT NULL
             AND m.text != ''
         ORDER BY m.date ASC
         LIMIT ?
-    """, (start_apple, end_apple, MAX_MESSAGES_TO_ANALYZE))
+    """, (start_datetime, end_datetime, MAX_MESSAGES_TO_ANALYZE))
 
     rows = cursor.fetchall()
     logging.info(f"Found {len(rows)} messages for {date_str}")
