@@ -87,6 +87,9 @@ def get_messages_for_date(date_str: str, conn: sqlite3.Connection) -> List[Dict]
     Returns:
         List of message dictionaries with contact, time, sender, and text
     """
+    # Ensure row factory is set for dict-like column access
+    conn.row_factory = sqlite3.Row
+
     # Create datetime strings for start and end of day
     start_datetime = f"{date_str} 00:00:00"
     end_datetime = f"{date_str} 23:59:59"
