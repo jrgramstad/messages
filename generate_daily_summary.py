@@ -80,6 +80,9 @@ def get_messages_for_date(date_str: str, conn: sqlite3.Connection) -> List[Dict]
     """
     Get ALL messages for a specific date with full text.
 
+    Uses direct SQLite datetime conversion on Apple epoch timestamps
+    to find all messages for the specified date.
+
     Args:
         date_str: Date in YYYY-MM-DD format
         conn: Database connection
@@ -98,22 +101,18 @@ def get_messages_for_date(date_str: str, conn: sqlite3.Connection) -> List[Dict]
 
     cursor = conn.cursor()
 
-    # Query all messages for the date with contact information
-    # Use SQLite's datetime conversion directly on Apple epoch timestamps
-    # Apple epoch: nanoseconds since 2001-01-01
-    # Conversion: date/1000000000 (to seconds) + Unix timestamp of 2001-01-01
+    # Query messages directly from message table
+    # Use SQLite's datetime conversion on Apple epoch timestamps
+    # Don't use chat_message_join as it may filter out messages
     cursor.execute("""
         SELECT
             m.ROWID,
             m.text,
             m.date,
             m.is_from_me,
-            h.id as contact_id,
-            c.chat_identifier
+            h.id as contact_id
         FROM message m
         LEFT JOIN handle h ON m.handle_id = h.ROWID
-        LEFT JOIN chat_message_join cmj ON m.ROWID = cmj.message_id
-        LEFT JOIN chat c ON cmj.chat_id = c.ROWID
         WHERE datetime(m.date/1000000000 + strftime('%s', '2001-01-01'), 'unixepoch')
             BETWEEN ? AND ?
             AND m.text IS NOT NULL
@@ -129,7 +128,7 @@ def get_messages_for_date(date_str: str, conn: sqlite3.Connection) -> List[Dict]
     messages = []
     for row in rows:
         unix_time = apple_to_unix(row['date'])
-        contact = row['contact_id'] or row['chat_identifier'] or "Unknown"
+        contact = row['contact_id'] or "Unknown"
 
         messages.append({
             "timestamp": format_timestamp(unix_time),
