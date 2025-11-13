@@ -621,6 +621,14 @@ For issues:
 
 ## Changelog
 
+### v1.2.1 - Fix attributedBody Text Extraction (2025-11-13)
+- **CRITICAL FIX**: Extract text from attributedBody column for newer macOS versions
+- Fixed all messages showing as "[media/attachment]" instead of actual text
+- Added `extract_text_from_attributed_body()` function to decode binary NSAttributedString blobs
+- Updated SQL query to select both text and attributedBody columns
+- Text extraction now tries both columns (text first, then attributedBody fallback)
+- Handles newer iMessage database format used in recent macOS versions
+
 ### v1.2.0 - Phase 2A Fixes + Backfill (2025-11-10)
 - **FIX**: Daily summary now retrieves actual message text from database
 - **FIX**: Message retrieval queries specific DATE (not rolling 24 hours)
