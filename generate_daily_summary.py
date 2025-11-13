@@ -439,7 +439,7 @@ Check the log file for details: `{LOG_FILE}`
 
 def save_summary(date_str: str, content: str) -> str:
     """
-    Save summary to file.
+    Save summary to file with -summary suffix.
 
     Args:
         date_str: Date in YYYY-MM-DD format
@@ -448,7 +448,7 @@ def save_summary(date_str: str, content: str) -> str:
     Returns:
         Path to saved file
     """
-    filename = f"{date_str}.md"
+    filename = f"{date_str}-summary.md"
     filepath = os.path.join(SUMMARY_DIR, filename)
 
     with open(filepath, 'w', encoding='utf-8') as f:
@@ -456,6 +456,110 @@ def save_summary(date_str: str, content: str) -> str:
 
     logging.info(f"Summary saved to: {filepath}")
     return filepath
+
+
+def save_raw_context(messages: List[Dict], grouped: Dict[str, List[Dict]], date_str: str) -> str:
+    """
+    Save raw message context with actual message text.
+
+    Args:
+        messages: List of all messages for the date
+        grouped: Messages grouped by contact
+        date_str: Date in YYYY-MM-DD format
+
+    Returns:
+        Path to saved file
+    """
+    try:
+        # Sort contacts by message count (most active first)
+        sorted_contacts = sorted(grouped.items(), key=lambda x: len(x[1]), reverse=True)
+
+        # Build markdown content
+        lines = []
+        lines.append(f"# Daily Message Context - Raw Data")
+        lines.append(f"**Date:** {date_str}")
+        lines.append(f"**Generated:** {datetime.now().strftime('%I:%M %p')}")
+        lines.append(f"**Total Messages:** {len(messages)}")
+        lines.append(f"**Conversations:** {len(grouped)}")
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+
+        # Add each conversation
+        for idx, (contact, contact_messages) in enumerate(sorted_contacts, 1):
+            contact_display = format_contact_name(contact)
+            msg_count = len(contact_messages)
+
+            # Get time range
+            first_time = contact_messages[0]['time']
+            last_time = contact_messages[-1]['time']
+
+            lines.append(f"## CONVERSATION {idx}: {contact_display}")
+            lines.append(f"**Messages:** {msg_count} | **Time Range:** {first_time} - {last_time}")
+            lines.append("")
+            lines.append("### Message Thread:")
+            lines.append("")
+
+            # Add each message
+            for msg in contact_messages:
+                time = msg['time']
+                sender = "You" if msg['is_from_me'] else contact_display
+                text = msg['text']
+
+                lines.append(f"**[{time}] {sender}:**")
+                lines.append(f"> {text}")
+                lines.append("")
+
+            lines.append("---")
+            lines.append("")
+
+        # Add metadata section
+        lines.append("## METADATA")
+        lines.append("")
+
+        # Calculate time-based statistics
+        morning_count = sum(1 for m in messages if 6 <= int(m['time'].split(':')[0]) < 9)
+        midday_count = sum(1 for m in messages if 9 <= int(m['time'].split(':')[0]) < 15)
+        evening_count = sum(1 for m in messages if 15 <= int(m['time'].split(':')[0]) < 21)
+        late_count = sum(1 for m in messages if int(m['time'].split(':')[0]) >= 21 or int(m['time'].split(':')[0]) < 6)
+
+        lines.append("**Busiest Times:**")
+        lines.append(f"- Morning (6-9 AM): {morning_count} messages")
+        lines.append(f"- Midday (9 AM-3 PM): {midday_count} messages")
+        lines.append(f"- Evening (3-9 PM): {evening_count} messages")
+        lines.append(f"- Late (9 PM+): {late_count} messages")
+        lines.append("")
+
+        # Message direction breakdown
+        from_you = sum(1 for m in messages if m['is_from_me'])
+        from_others = len(messages) - from_you
+
+        lines.append("**Message Breakdown:**")
+        lines.append(f"- From You: {from_you} messages")
+        lines.append(f"- From Others: {from_others} messages")
+        lines.append(f"- Total: {len(messages)} messages")
+        lines.append("")
+
+        lines.append("---")
+        lines.append("")
+        lines.append("*Raw context file generated for executive analysis*")
+        lines.append(f"*Companion summary: {date_str}-summary.md*")
+        lines.append("")
+
+        # Save to file
+        filename = f"{date_str}-raw.md"
+        filepath = os.path.join(SUMMARY_DIR, filename)
+
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write("\n".join(lines))
+
+        logging.info(f"Raw context saved to: {filepath}")
+        return filepath
+
+    except Exception as e:
+        logging.error(f"Error saving raw context: {e}", exc_info=True)
+        # Don't fail if raw context save fails - summary is more important
+        return None
 
 
 def main():
@@ -477,17 +581,53 @@ def main():
 
         # Get today's date
         today = datetime.now().strftime('%Y-%m-%d')
-        logging.info(f"Generating summary for: {today}")
+        logging.info(f"Generating summaries for: {today}")
 
-        # Generate summary
-        summary_content = generate_summary_markdown(today)
+        # Get database connection
+        conn = get_db_connection()
 
-        # Save to file
-        filepath = save_summary(today, summary_content)
+        # Get all messages for the date
+        messages = get_messages_for_date(today, conn)
+
+        # Close connection
+        conn.close()
+
+        if not messages:
+            logging.info("No messages found for this date")
+            # Create empty summary
+            summary_content = f"""# Daily Communication Summary
+**Date:** {today}
+**Generated:** {datetime.now().strftime('%I:%M %p')}
+
+---
+
+*No message activity today.*
+
+---
+
+*Generated by iMessage MCP Server - Phase 2A*
+"""
+            filepath = save_summary(today, summary_content)
+            logging.info(f"✓ Summary generated: {filepath}")
+            return 0
+
+        # Group messages by contact
+        grouped = group_messages_by_contact(messages)
+
+        logging.info(f"Found {len(messages)} messages across {len(grouped)} conversations")
+
+        # Generate Claude-analyzed summary
+        summary_content = analyze_with_claude(today, messages, grouped)
+
+        # Save both files
+        summary_path = save_summary(today, summary_content)
+        raw_path = save_raw_context(messages, grouped, today)
 
         # Success
         logging.info("=" * 60)
-        logging.info(f"✓ Summary generated successfully: {filepath}")
+        logging.info(f"✓ Summary saved: {summary_path}")
+        if raw_path:
+            logging.info(f"✓ Raw context saved: {raw_path}")
         logging.info("=" * 60)
 
         return 0
