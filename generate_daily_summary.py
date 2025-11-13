@@ -93,18 +93,14 @@ def get_messages_for_date(date_str: str, conn: sqlite3.Connection) -> List[Dict]
     # Ensure row factory is set for dict-like column access
     conn.row_factory = sqlite3.Row
 
-    # Create datetime strings for start and end of day
-    start_datetime = f"{date_str} 00:00:00"
-    end_datetime = f"{date_str} 23:59:59"
-
-    logging.info(f"Querying messages for {date_str} ({start_datetime} to {end_datetime})")
+    logging.info(f"Querying messages for {date_str}")
 
     cursor = conn.cursor()
 
     # Query messages directly from message table
-    # Use SQLite's datetime conversion on Apple epoch timestamps
-    # Don't use chat_message_join as it may filter out messages
-    # Include ALL messages (with and without text) to get accurate counts
+    # Use SQLite's date() function to extract just the date part in local timezone
+    # This avoids timezone/DST issues with BETWEEN comparisons
+    # Apple timestamps: nanoseconds since 2001-01-01, convert to Unix epoch seconds
     cursor.execute("""
         SELECT
             m.ROWID,
@@ -114,11 +110,10 @@ def get_messages_for_date(date_str: str, conn: sqlite3.Connection) -> List[Dict]
             h.id as contact_id
         FROM message m
         LEFT JOIN handle h ON m.handle_id = h.ROWID
-        WHERE datetime(m.date/1000000000 + strftime('%s', '2001-01-01'), 'unixepoch', 'localtime')
-            BETWEEN ? AND ?
+        WHERE date(datetime(m.date/1000000000 + strftime('%s', '2001-01-01'), 'unixepoch', 'localtime')) = ?
         ORDER BY m.date ASC
         LIMIT ?
-    """, (start_datetime, end_datetime, MAX_MESSAGES_TO_ANALYZE))
+    """, (date_str, MAX_MESSAGES_TO_ANALYZE))
 
     rows = cursor.fetchall()
     logging.info(f"Found {len(rows)} messages for {date_str}")
