@@ -76,6 +76,56 @@ def format_contact_name(contact_id: str) -> str:
     return contact_id
 
 
+def extract_text_from_attributed_body(attributed_body: bytes) -> Optional[str]:
+    """
+    Extract plain text from iMessage attributedBody binary blob.
+
+    The attributedBody is an NSAttributedString stored as a binary plist.
+    We use a simple heuristic to extract readable text from it.
+
+    Args:
+        attributed_body: Binary blob from message.attributedBody column
+
+    Returns:
+        Extracted text string or None if unable to extract
+    """
+    if not attributed_body:
+        return None
+
+    try:
+        # The attributedBody contains UTF-8 text interspersed with binary data
+        # Simple approach: split by null bytes and extract printable UTF-8 strings
+        text_parts = []
+
+        for chunk in attributed_body.split(b'\x00'):
+            try:
+                # Try to decode as UTF-8
+                decoded = chunk.decode('utf-8', errors='ignore').strip()
+                # Keep strings that are at least 2 chars and mostly printable
+                if len(decoded) >= 2 and sum(c.isprintable() or c.isspace() for c in decoded) / len(decoded) > 0.8:
+                    text_parts.append(decoded)
+            except:
+                continue
+
+        if text_parts:
+            # Join parts and clean up
+            text = ' '.join(text_parts)
+            # Remove common binary artifacts
+            text = text.replace('NSNumber', '').replace('NSString', '').replace('NSDictionary', '')
+            text = text.replace('__kIMMessagePartAttributeName', '')
+            text = ' '.join(text.split())  # Normalize whitespace
+
+            # Return if we got something meaningful
+            if len(text) >= 2:
+                return text
+
+        return None
+
+    except Exception as e:
+        logging.debug(f"Failed to extract text from attributedBody: {e}")
+        return None
+
+
 def get_messages_for_date(date_str: str, conn: sqlite3.Connection) -> List[Dict]:
     """
     Get ALL messages for a specific date with full text.
@@ -101,10 +151,12 @@ def get_messages_for_date(date_str: str, conn: sqlite3.Connection) -> List[Dict]
     # Use SQLite's date() function to extract just the date part in local timezone
     # This avoids timezone/DST issues with BETWEEN comparisons
     # Apple timestamps: nanoseconds since 2001-01-01, convert to Unix epoch seconds
+    # NOTE: attributedBody contains text for newer macOS versions
     cursor.execute("""
         SELECT
             m.ROWID,
             m.text,
+            m.attributedBody,
             m.date,
             m.is_from_me,
             h.id as contact_id
@@ -124,9 +176,20 @@ def get_messages_for_date(date_str: str, conn: sqlite3.Connection) -> List[Dict]
         unix_time = apple_to_unix(row['date'])
         contact = row['contact_id'] or "Unknown"
 
-        # Handle messages without text (media, reactions, tapbacks, etc.)
-        text = row['text']
-        if not text or text.strip() == '':
+        # Extract text from either text column or attributedBody
+        # Newer macOS versions store text in attributedBody as binary blob
+        text = None
+
+        # Try text column first (older format)
+        if row['text'] and row['text'].strip():
+            text = row['text'].strip()
+
+        # If no text, try attributedBody (newer format)
+        if not text and row['attributedBody']:
+            text = extract_text_from_attributed_body(row['attributedBody'])
+
+        # If still no text, mark as media/attachment
+        if not text:
             text = "[media/attachment]"
 
         messages.append({
